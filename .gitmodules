@@ -6,7 +6,7 @@
 	url = git@github.com:facebookresearch/sam2.git
 [submodule "submodules/phantom-robosuite"]
 	path = submodules/phantom-robosuite
-	url = git@github.com:MarionLepert/phantom-robosuite.git
+	url = git@github.com:Bdabet/phantom-robosuite.git
 [submodule "submodules/phantom-robomimic"]
 	path = submodules/phantom-robomimic
 	url = git@github.com:MarionLepert/phantom-robomimic.git

@@ -104,7 +104,7 @@ Each video is processed using the following steps:
 |------|------|----------|---------|-------------|
 | `--demo_name` | `str` | ✅ | - | Name of the demonstration/dataset to process |
 | `--mode` | `str` (multiple) | ✅ | `bbox`, `hand2d`, `hand3d`, `hand_segmentation`, `arm_segmentation`, `action`, `smoothing`, `hand_inpaint`, `robot_inpaint`, `all` | Processing modes to run (can specify multiple with e.g. `'mode=[bbox,hand2d]'`) |
-| `--robot_name` | `str` | ✅ | `Panda`, `Kinova3`, `UR5e`, `IIWA`, `Jaco` | Type of robot to use for overlays |
+| `--robot_name` | `str` | ✅ | `Panda`, `Kinova3`, `UR5e`, `UR7e`, `IIWA`, `Jaco` | Type of robot to use for overlays |
 | `--gripper_name` | `str` | ❌ | `Robotiq85` | Type of gripper to use |
 | `--data_root_dir` | `str` | ❌ | - | Root directory containing raw video data |
 | `--processed_data_root_dir` | `str` | ❌ | - | Root directory to save processed data |
