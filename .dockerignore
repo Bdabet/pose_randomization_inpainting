@@ -1,0 +1,7 @@
+# The devcontainer Dockerfile doesn't COPY any of this -- it's all handled
+# by the bind-mounted workspace + postCreateCommand instead -- so keep it
+# out of the build context to keep `docker build` fast.
+.git/
+data/
+submodules/
+smoke_test_ur7e_out/
