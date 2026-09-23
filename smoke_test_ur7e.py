@@ -16,29 +16,50 @@ Outputs PNGs (RGB render + colorized segmentation mask) per test pose into
 ./smoke_test_ur7e_out/ for visual inspection.
 """
 import argparse
+import json
 import os
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from phantom.twin_robot import TwinRobot, MujocoCameraParams
+from phantom.twin_robot import TwinRobot, MujocoCameraParams, convert_real_camera_ori_to_mujoco
 
 OUT_DIR = "smoke_test_ur7e_out"
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# Arbitrary but sane frontview camera looking at the robot's workspace.
-# This does NOT need to match the real calibrated camera used by the actual
-# pipeline (see robotinpaint_processor.py's _get_mujoco_camera_params for
-# that) -- it only needs to see the robot for this geometry/kinematics check.
-CAMERA_PARAMS = MujocoCameraParams(
-    name="frontview",
-    pos=np.array([1.6, 0.0, 1.4]),
-    ori_wxyz=Rotation.from_euler("xyz", [0, 35, 90], degrees=True).as_quat(scalar_first=True),
-    fov=60.0,
-    resolution=(480, 640),
-    sensorsize=np.array([36.0, 24.0]),
-    principalpixel=np.array([0.0, 0.0]),
-    focalpixel=np.array([600.0, 600.0]),
-)
+
+def _build_real_camera_params(square: bool = True) -> MujocoCameraParams:
+    """
+    Mirrors RobotInpaintProcessor._get_mujoco_camera_params exactly (see
+    phantom/processors/robotinpaint_processor.py), using the same real
+    calibration files configs/default.yaml points at, so this smoke test
+    actually sees the robot instead of guessing a camera pose.
+    """
+    with open(os.path.join(REPO_ROOT, "phantom/camera/camera_intrinsics_HD1080.json")) as f:
+        intrinsics = json.load(f)["left"]
+    with open(os.path.join(REPO_ROOT, "phantom/camera/camera_extrinsics.json")) as f:
+        extrinsics = json.load(f)[0]
+
+    img_w, img_h = 1080 * 16 // 9, 1080  # input_resolution=1080 (Phantom paper default)
+    offset = (img_w - img_h) // 2 if square else 0
+    fx, fy, cx, cy = intrinsics["fx"], intrinsics["fy"], intrinsics["cx"] + offset, intrinsics["cy"]
+    sensor_width, sensor_height = img_w / fy / 1000, img_h / fx / 1000
+
+    camera_ori_wxyz = convert_real_camera_ori_to_mujoco(np.array(extrinsics["camera_base_ori"]))
+
+    return MujocoCameraParams(
+        name="frontview",
+        pos=np.array(extrinsics["camera_base_pos"]),
+        ori_wxyz=camera_ori_wxyz,
+        fov=intrinsics["v_fov"],
+        resolution=(img_h, img_w),
+        sensorsize=np.array([sensor_width, sensor_height]),
+        principalpixel=np.array([img_w / 2 - cx, cy - img_h / 2]),
+        focalpixel=np.array([fx, fy]),
+    )
+
+
+CAMERA_PARAMS = _build_real_camera_params()
 
 # A handful of end-effector poses spanning the workspace: center, left, right,
 # near, far, plus one with a non-identity orientation.
@@ -84,7 +105,11 @@ def main():
     all_ok = True
     for i, pose in enumerate(TEST_POSES):
         state = {"pos": pose["pos"], "ori_xyzw": pose["quat_xyzw"], "gripper_pos": pose["gripper"]}
-        result = robot.move_to_target_state(state, init=(i == 0))
+        # init=True every time (not just i==0): these are disconnected,
+        # hand-picked poses, not a continuous trajectory, so use the longer
+        # settle time (n_steps_long) for every jump rather than the short
+        # per-frame delta used for real, smooth trajectories.
+        result = robot.move_to_target_state(state, init=True)
 
         pos_err = result["pos_err"]
         status = "OK" if pos_err <= TRACKING_ERROR_THRESHOLD else "FAIL (tracking error too high)"

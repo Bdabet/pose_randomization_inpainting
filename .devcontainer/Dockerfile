@@ -14,7 +14,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 ENV MUJOCO_GL=egl
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git wget curl unzip ca-certificates \
+        git openssh-client wget curl unzip ca-certificates \
         build-essential cmake ninja-build \
         ffmpeg \
         libgl1 libglu1-mesa libglew-dev libosmesa6-dev libglfw3 libgles2-mesa-dev libegl1 \
@@ -29,7 +29,7 @@ ARG USERNAME=vscode
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
+    && useradd --uid $USER_UID --gid $USER_GID -m --shell /bin/bash $USERNAME \
     && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 

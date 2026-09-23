@@ -4,8 +4,13 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
-**/__pycache__/*
+**/__pycach_e_/*
 *.pyc
 *.pth
 outputs/*
 phantom/outputs/*
+Cad_files/*
+replay_buffer.zarr/*
+pick_and_place/*
+smoke_test_ur7e_out/*
+epic/*

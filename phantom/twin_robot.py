@@ -333,6 +333,14 @@ class TwinRobot:
             open_gripper_action, closed_gripper_action = 0, 255  # 0=open, 255=closed
             # Linear interpolation between open and closed states
             return np.interp(gripper_pos, [min_gripper_pos, max_gripper_pos], [closed_gripper_action, open_gripper_action])
+        elif self.gripper_name in ("ECBPi", "ECBPiUR"):
+            # ECBPi is a suction gripper: no opening distance, so the hand's thumb-index
+            # distance is instead mapped onto the cup's small bellows joint range
+            # (0 = idle, -0.01 = engaged), giving a visible suction on/off cue.
+            min_gripper_pos, max_gripper_pos = 0.0, 0.085
+            gripper_pos = np.clip(gripper_pos, min_gripper_pos, max_gripper_pos)
+            idle_action, engaged_action = 0.0, -0.01
+            return np.interp(gripper_pos, [min_gripper_pos, max_gripper_pos], [engaged_action, idle_action])
         else:
             raise ValueError(f"Gripper name {self.gripper_name} not supported")
 
