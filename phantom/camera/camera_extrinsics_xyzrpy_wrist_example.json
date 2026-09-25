@@ -1,14 +1,15 @@
 {
-    "_note": "PLACEHOLDER -- replace with a real wrist-camera calibration. Unlike camera_extrinsics_xyzrpy_example.json (world-frame), xyz/rpy here are relative to the robot's flange (eef) body frame.",
+   
     "xyz": [
-        0.05,
-        0.0,
-        0.03
+       0.07321877993313171,
+        -0.06375923757272839,
+        0.06248233100572166
     ],
     "rpy": [
-        0.0,
-        0.0,
-        0.0
+        1.279,
+        2.33538807,
+        25.895
     ],
+    
     "degrees": true
 }
