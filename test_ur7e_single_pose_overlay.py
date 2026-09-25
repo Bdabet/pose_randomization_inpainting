@@ -204,6 +204,9 @@ def main():
     parser.add_argument("--wrist-camera-intrinsics", default=DEFAULT_WRIST_CAMERA_INTRINSICS_PATH,
                          help="Path to a JSON file with {\"camera_matrix\": [...], \"dist_coefs\": [...], "
                               "\"resolution\": [w, h]} wrist camera intrinsics")
+    parser.add_argument("--show-wrist-camera", action="store_true",
+                         help="Render a box at the wrist camera's pose so it is visible in the fixed-camera overlay "
+                              "(requires --wrist-image)")
     parser.add_argument("--render", action="store_true", help="Open an on-screen MuJoCo viewer while stepping")
     args = parser.parse_args()
 
@@ -250,6 +253,7 @@ def main():
         n_steps_long=75,
         square=False,
         wrist_camera_params=wrist_camera_params,
+        show_wrist_camera=args.show_wrist_camera,
     )
     print("TwinRobot initialized successfully.\n")
 

@@ -85,7 +85,8 @@ class TwinRobot:
     
     def __init__(self, robot_name: str, gripper_name: str, camera_params: MujocoCameraParams, camera_height: int, camera_width: int,
                  render: bool, n_steps_short: int, n_steps_long: int, debug_cameras: list[str] = [],
-                 square: bool = False, wrist_camera_params: Union[MujocoCameraParams, None] = None):
+                 square: bool = False, wrist_camera_params: Union[MujocoCameraParams, None] = None,
+                 show_wrist_camera: bool = False):
         """
         Initialize the single-arm robot twin.
 
@@ -103,6 +104,8 @@ class TwinRobot:
             wrist_camera_params: Optional wrist-mounted camera, attached to the robot's
                 eef ("flange") body instead of the world -- pos/ori_wxyz are local to
                 that body frame rather than world coordinates
+            show_wrist_camera: If True (and wrist_camera_params is set), add a box at the
+                wrist camera's pose so it is rendered (and masked as robot) in other cameras
         """
         # Store configuration parameters
         self.robot_name = robot_name
@@ -166,6 +169,7 @@ class TwinRobot:
             options["wrist_camera_sensorsize"] = self.wrist_camera_params.sensorsize
             options["wrist_camera_principalpixel"] = self.wrist_camera_params.principalpixel
             options["wrist_camera_focalpixel"] = self.wrist_camera_params.focalpixel
+            options["show_wrist_camera"] = show_wrist_camera
             camera_names.append(self.wrist_camera_name)
 
         # Create the robosuite environment
