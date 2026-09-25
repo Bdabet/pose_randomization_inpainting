@@ -84,11 +84,11 @@ class TwinRobot:
     DEFAULT_ROBOT_BASE_POS = np.array([-0.56, 0, 0.912])
     
     def __init__(self, robot_name: str, gripper_name: str, camera_params: MujocoCameraParams, camera_height: int, camera_width: int,
-                 render: bool, n_steps_short: int, n_steps_long: int, debug_cameras: list[str] = [], 
-                 square: bool = False): 
+                 render: bool, n_steps_short: int, n_steps_long: int, debug_cameras: list[str] = [],
+                 square: bool = False, wrist_camera_params: Union[MujocoCameraParams, None] = None):
         """
         Initialize the single-arm robot twin.
-        
+
         Args:
             robot_name: Type of robot (e.g., "Kinova3")
             gripper_name: Type of gripper (e.g., "Robotiq85")
@@ -100,6 +100,9 @@ class TwinRobot:
             n_steps_long: Number of simulation steps for initial/slow movements
             debug_cameras: Additional camera names for debugging views
             square: Whether to crop images to square aspect ratio
+            wrist_camera_params: Optional wrist-mounted camera, attached to the robot's
+                eef ("flange") body instead of the world -- pos/ori_wxyz are local to
+                that body frame rather than world coordinates
         """
         # Store configuration parameters
         self.robot_name = robot_name
@@ -114,12 +117,17 @@ class TwinRobot:
         self.camera_name = "frontview"  # Main camera name for single-arm setup
         self.square = square
         self.debug_cameras = list(debug_cameras) if debug_cameras else []
+        self.wrist_camera_params = wrist_camera_params
+        self.wrist_camera_name = wrist_camera_params.name if wrist_camera_params else None
 
         # Configure observation specifications for robomimic
+        rgb_obs = [f"{self.camera_params.name}_image"] + [f"{cam}_image" for cam in self.debug_cameras]
+        if self.wrist_camera_name:
+            rgb_obs.append(f"{self.wrist_camera_name}_image")
         obs_spec = dict(
             obs=dict(
                 low_dim=["robot0_eef_pos"],  # End-effector position observations
-                rgb=[f"{self.camera_params.name}_image"] + [f"{cam}_image" for cam in self.debug_cameras],
+                rgb=rgb_obs,
             ),
         )
         ObsUtils.initialize_obs_utils_with_obs_specs(
@@ -151,13 +159,22 @@ class TwinRobot:
         options["camera_principalpixel"] = self.camera_params.principalpixel
         options["camera_focalpixel"] = self.camera_params.focalpixel
 
+        camera_names = [self.camera_params.name] + self.debug_cameras
+        if self.wrist_camera_params:
+            options["wrist_camera_pos"] = self.wrist_camera_params.pos
+            options["wrist_camera_quat_wxyz"] = self.wrist_camera_params.ori_wxyz
+            options["wrist_camera_sensorsize"] = self.wrist_camera_params.sensorsize
+            options["wrist_camera_principalpixel"] = self.wrist_camera_params.principalpixel
+            options["wrist_camera_focalpixel"] = self.wrist_camera_params.focalpixel
+            camera_names.append(self.wrist_camera_name)
+
         # Create the robosuite environment
         self.env = EnvRobosuite(
             **options,
             render=render,
             render_offscreen=True,  # Enable offscreen rendering for image capture
             use_image_obs=True,
-            camera_names=[self.camera_params.name] + self.debug_cameras,
+            camera_names=camera_names,
             control_freq=20,  # 20 Hz control frequency
         )
 
@@ -308,6 +325,12 @@ class TwinRobot:
             cam_img = self.get_cam_image(obs, cam)
             output[f"{cam}_img"] = cam_img
 
+        # Add wrist camera image and masks if a wrist camera is configured
+        if self.wrist_camera_name:
+            output["wrist_rgb_img"] = self.get_cam_image(obs, self.wrist_camera_name)
+            output["wrist_robot_mask"] = np.squeeze(self.get_robot_mask(obs, self.wrist_camera_name))
+            output["wrist_gripper_mask"] = np.squeeze(self.get_gripper_mask(obs, self.wrist_camera_name))
+
         return output
 
     def _convert_handgripper_pos_to_action(self, gripper_pos: float) -> np.ndarray:
@@ -414,18 +437,19 @@ class TwinRobot:
             img = img[:,n_remove:-n_remove,:]
         return img
     
-    def get_seg_image(self, obs: dict) -> np.ndarray:
+    def get_seg_image(self, obs: dict, camera_name: Union[str, None] = None) -> np.ndarray:
         """
         Extract instance segmentation image.
-        
+
         Args:
             obs: Observation dictionary containing segmentation data
-            
+            camera_name: Camera to read segmentation from (default: main camera)
+
         Returns:
             Segmentation image as uint8 array where each pixel value
             represents a different object instance ID
         """
-        img = obs["frontview_segmentation_instance"]  # Fixed camera name for single-arm
+        img = obs[f"{camera_name or self.camera_name}_segmentation_instance"]
         height = img.shape[0]
         width = img.shape[1]
         
@@ -461,38 +485,41 @@ class TwinRobot:
             img = img[:,n_remove:-n_remove,:]
         return img
     
-    def get_robot_mask(self, obs: dict) -> np.ndarray:
+    def get_robot_mask(self, obs: dict, camera_name: Union[str, None] = None) -> np.ndarray:
         """
         Generate binary mask for robot pixels.
-        
+
         Uses instance segmentation to identify which pixels belong to
         the robot arm (instance ID 1).
-        
+
         Args:
             obs: Observation dictionary containing segmentation data
-            
+            camera_name: Camera to read segmentation from (default: main camera)
+
         Returns:
             Binary mask where 1 indicates robot pixels, 0 otherwise
         """
-        seg_img = self.get_seg_image(obs)
+
+        seg_img = self.get_seg_image(obs, camera_name)
         mask = np.zeros_like(seg_img)
         mask[seg_img == 1] = 1  # Robot arm
         return mask
-    
-    def get_gripper_mask(self, obs: dict) -> np.ndarray:
+
+    def get_gripper_mask(self, obs: dict, camera_name: Union[str, None] = None) -> np.ndarray:
         """
         Generate binary mask for gripper pixels.
-        
+
         Uses instance segmentation to identify which pixels belong to
         the robot gripper (instance ID 3).
-        
+
         Args:
             obs: Observation dictionary containing segmentation data
-            
+            camera_name: Camera to read segmentation from (default: main camera)
+
         Returns:
             Binary mask where 1 indicates gripper pixels, 0 otherwise
         """
-        seg_img = self.get_seg_image(obs)
+        seg_img = self.get_seg_image(obs, camera_name)
         mask = np.zeros_like(seg_img)
         mask[seg_img == 3] = 1  # Gripper
         return mask

@@ -37,11 +37,22 @@ See phantom/camera/camera_extrinsics_xyzrpy_example.json and
 phantom/camera/camera_intrinsics_example.json for filled-in examples
 generated from the repo's existing calibration.
 
+Optionally, a second wrist-mounted camera can also be tested by passing
+--wrist-image (a second photo of the same scene/pose, taken from a camera
+mounted on the robot's flange) along with --wrist-camera-extrinsics /
+--wrist-camera-intrinsics. The wrist camera's extrinsics use the same
+{xyz, rpy, degrees} JSON format as the fixed camera, but are interpreted
+relative to the flange (eef) body frame instead of world coordinates --
+the camera is attached to the flange in MuJoCo, so it moves with the arm.
+
 Usage:
     python test_ur7e_single_pose_overlay.py --image path/to/photo.jpg \
         --pos 0.5 0.0 0.35 [--ori 0 1 0 0] [--gripper 0.04] \
         [--camera-extrinsics path/to/extrinsics_xyzrpy.json] \
-        [--camera-intrinsics path/to/intrinsics.json] [options]
+        [--camera-intrinsics path/to/intrinsics.json] \
+        [--wrist-image path/to/wrist_photo.jpg] \
+        [--wrist-camera-extrinsics path/to/wrist_extrinsics_xyzrpy.json] \
+        [--wrist-camera-intrinsics path/to/wrist_intrinsics.json] [options]
 """
 import argparse
 import json
@@ -66,6 +77,12 @@ DEFAULT_CAMERA_EXTRINSICS_PATH = os.path.join(
 )
 DEFAULT_CAMERA_INTRINSICS_PATH = os.path.join(
     REPO_ROOT, "phantom/camera/camera_intrinsics_example.json"
+)
+DEFAULT_WRIST_CAMERA_EXTRINSICS_PATH = os.path.join(
+    REPO_ROOT, "phantom/camera/camera_extrinsics_xyzrpy_wrist_example.json"
+)
+DEFAULT_WRIST_CAMERA_INTRINSICS_PATH = os.path.join(
+    REPO_ROOT, "phantom/camera/camera_intrinsics_wrist_example.json"
 )
 
 
@@ -97,12 +114,18 @@ def load_camera_intrinsics(path: str) -> tuple[np.ndarray, tuple]:
 
 
 def build_camera_params(camera_extrinsics_path: str, camera_intrinsics_path: str,
-                         img_w: int, img_h: int) -> MujocoCameraParams:
+                         img_w: int, img_h: int, name: str = "frontview") -> MujocoCameraParams:
     """
     Builds MujocoCameraParams for a photo of size (img_w, img_h), scaling
     the intrinsics file's camera matrix from its own calibration resolution
     to (img_w, img_h) if given (mirrors test_pushT_twin_overlay.py's
     build_camera_params).
+
+    `name` is the MuJoCo camera name -- "frontview" for the fixed world
+    camera, "wristview" for the flange-mounted one. The extrinsics/pos are
+    interpreted the same way regardless of name; it's the caller's
+    responsibility to know whether they're in world or flange-local
+    coordinates (see TwinRobot's `wrist_camera_params` for the latter).
     """
     camera_pos, camera_ori_matrix = load_camera_extrinsics_xyzrpy(camera_extrinsics_path)
     camera_matrix, calib_resolution = load_camera_intrinsics(camera_intrinsics_path)
@@ -122,7 +145,7 @@ def build_camera_params(camera_extrinsics_path: str, camera_intrinsics_path: str
     camera_ori_wxyz = convert_real_camera_ori_to_mujoco(camera_ori_matrix)
 
     return MujocoCameraParams(
-        name="frontview",
+        name=name,
         pos=camera_pos,
         ori_wxyz=camera_ori_wxyz,
         fov=v_fov,
@@ -169,6 +192,18 @@ def main():
     parser.add_argument("--camera-intrinsics", default=DEFAULT_CAMERA_INTRINSICS_PATH,
                          help="Path to a JSON file with {\"camera_matrix\": [...], \"dist_coefs\": [...], "
                               "\"resolution\": [w, h]} camera intrinsics")
+    parser.add_argument("--wrist-image", default=None,
+                         help="Optional path to a second photo taken from a wrist-mounted camera at the same "
+                              "robot pose. If given, the robot is also rendered from a camera attached to the "
+                              "flange and composited onto this image.")
+    parser.add_argument("--wrist-output", default=None,
+                         help="Output image path for the wrist-camera overlay (default: <wrist_image_stem>_ur7e_pose.png)")
+    parser.add_argument("--wrist-camera-extrinsics", default=DEFAULT_WRIST_CAMERA_EXTRINSICS_PATH,
+                         help="Path to a JSON file with {\"xyz\": [...], \"rpy\": [...], \"degrees\": bool} "
+                              "wrist camera extrinsics, expressed relative to the flange (eef) frame, not world")
+    parser.add_argument("--wrist-camera-intrinsics", default=DEFAULT_WRIST_CAMERA_INTRINSICS_PATH,
+                         help="Path to a JSON file with {\"camera_matrix\": [...], \"dist_coefs\": [...], "
+                              "\"resolution\": [w, h]} wrist camera intrinsics")
     parser.add_argument("--render", action="store_true", help="Open an on-screen MuJoCo viewer while stepping")
     args = parser.parse_args()
 
@@ -183,6 +218,21 @@ def main():
 
     camera_params = build_camera_params(args.camera_extrinsics, args.camera_intrinsics, img_w, img_h)
     print(f"Camera params: pos={camera_params.pos}, resolution={camera_params.resolution}")
+
+    wrist_frame = None
+    wrist_camera_params = None
+    if args.wrist_image:
+        print(f"Reading wrist image: {args.wrist_image}")
+        wrist_image_bgr = cv2.imread(args.wrist_image)
+        if wrist_image_bgr is None:
+            raise FileNotFoundError(f"Could not read image: {args.wrist_image}")
+        wrist_img_h, wrist_img_w = wrist_image_bgr.shape[:2]
+        wrist_frame = cv2.cvtColor(wrist_image_bgr, cv2.COLOR_BGR2RGB)
+
+        wrist_camera_params = build_camera_params(args.wrist_camera_extrinsics, args.wrist_camera_intrinsics,
+                                                    wrist_img_w, wrist_img_h, name="wristview")
+        print(f"Wrist camera params (flange-relative): pos={wrist_camera_params.pos}, "
+              f"resolution={wrist_camera_params.resolution}")
 
     pos = np.array(args.pos)
     ori_xyzw = np.array(args.ori)
@@ -199,6 +249,7 @@ def main():
         n_steps_short=3,
         n_steps_long=75,
         square=False,
+        wrist_camera_params=wrist_camera_params,
     )
     print("TwinRobot initialized successfully.\n")
 
@@ -211,6 +262,14 @@ def main():
                             "target pose may be unreachable, overlay geometry may be off")
 
         output_frame = overlay_robot(frame, robot_results)
+
+        wrist_output_frame = None
+        if wrist_frame is not None:
+            wrist_output_frame = overlay_robot(wrist_frame, {
+                "rgb_img": robot_results["wrist_rgb_img"],
+                "robot_mask": robot_results["wrist_robot_mask"],
+                "gripper_mask": robot_results["wrist_gripper_mask"],
+            })
     finally:
         robot.close()
 
@@ -218,6 +277,12 @@ def main():
     cv2.imwrite(output_path, cv2.cvtColor(output_frame, cv2.COLOR_RGB2BGR))
     print(f"\nDone. Position tracking error: {robot_results['pos_err']:.4f} m")
     print(f"Output written to: {output_path}")
+
+    if wrist_output_frame is not None:
+        wrist_output_path = args.wrist_output or (os.path.splitext(args.wrist_image)[0] + "_ur7e_pose.png")
+        print(f"Writing wrist-camera output to {wrist_output_path}")
+        cv2.imwrite(wrist_output_path, cv2.cvtColor(wrist_output_frame, cv2.COLOR_RGB2BGR))
+        print(f"Wrist-camera output written to: {wrist_output_path}")
 
 
 if __name__ == "__main__":
