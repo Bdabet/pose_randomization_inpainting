@@ -4,13 +4,17 @@ import logging
 import numpy as np
 import shutil
 import errno
-from typing import Tuple
+from typing import Tuple, TYPE_CHECKING
 from pathlib import Path
 from omegaconf import DictConfig
+from scipy.spatial.transform import Rotation
 
 from phantom.utils.data_utils import get_parent_folder_of_package
 from phantom.utils.image_utils import get_intrinsics_from_json, get_transformation_matrix_from_extrinsics
 from phantom.processors.paths import Paths, PathsConfig
+
+if TYPE_CHECKING:
+    from phantom.twin_bimanual_robot import MujocoCameraParams
 
 logger = logging.getLogger(__name__)
 
@@ -207,3 +211,123 @@ class BaseProcessor:
         intrinsics_dict["cx"] -= offset
         intrinsics_matrix[0, 2] -= offset
         return intrinsics_dict, intrinsics_matrix
+
+    def _get_mujoco_camera_params(self) -> "MujocoCameraParams":
+        """
+        Generate MuJoCo camera parameters from real-world camera calibration.
+        
+        Returns:
+            MujocoCameraParams object with calibrated camera settings
+        """
+        # Imported lazily: pulls in robosuite/robomimic, which most processors don't need
+        from phantom.twin_bimanual_robot import MujocoCameraParams
+
+        # Extract real-world camera extrinsics and convert to MuJoCo format
+        extrinsics = self.extrinsics[0]
+        camera_ori_wxyz = self._convert_real_camera_ori_to_mujoco(
+            np.array(extrinsics["camera_base_ori"])
+        )
+
+        # Calculate image dimensions and camera intrinsics
+        img_w, img_h = self._get_image_dimensions()
+        offset = self._calculate_image_offset(img_w, img_h)
+        fx, fy, cx, cy = self._get_camera_intrinsics(offset)
+        sensor_width, sensor_height = self._calculate_sensor_size(img_w, img_h, fx, fy)
+
+        # Select appropriate camera name based on dataset
+        if self.epic:
+            camera_name = "zed"
+        else:
+            camera_name = "frontview"
+            
+        return MujocoCameraParams(
+            name=camera_name,
+            pos=extrinsics["camera_base_pos"],
+            ori_wxyz=camera_ori_wxyz,
+            fov=self.intrinsics_dict["v_fov"],
+            resolution=(img_h, img_w),
+            sensorsize=np.array([sensor_width, sensor_height]),
+            principalpixel=np.array([img_w/2-cx, cy-img_h/2]),
+            focalpixel=np.array([fx, fy])
+        )
+    
+    def _get_image_dimensions(self) -> Tuple[int, int]:
+        """
+        Calculate image dimensions based on input resolution configuration.
+        
+        Returns:
+            Tuple of (width, height) in pixels
+        """
+        # Epic
+        if self.input_resolution == 256:
+            img_w = 456
+        # Phantom paper
+        elif self.input_resolution == 1080:
+            img_w = self.input_resolution * 16 // 9
+        img_h = self.input_resolution
+        return img_w, img_h
+    
+    def _calculate_image_offset(self, img_w: int, img_h: int) -> int:
+        """
+        Calculate horizontal image offset for square aspect ratio processing.
+        
+        Args:
+            img_w: Image width in pixels
+            img_h: Image height in pixels
+            
+        Returns:
+            Horizontal offset in pixels
+        """
+        if self.square:
+            offset = (img_w - img_h) // 2
+        else:
+            offset = 0
+        return offset
+    
+    def _get_camera_intrinsics(self, offset: int) -> Tuple[float, float, float, float]:
+        """
+        Extract camera intrinsic parameters with offset correction.
+        
+        Args:
+            offset: Horizontal offset for principal point adjustment
+            
+        Returns:
+            Tuple of (fx, fy, cx, cy) camera intrinsic parameters
+        """
+        return self.intrinsics_dict["fx"], self.intrinsics_dict["fy"], self.intrinsics_dict["cx"]+offset, self.intrinsics_dict["cy"]
+
+    def _calculate_sensor_size(self, img_w: int, img_h: int, fx: float, fy: float) -> Tuple[float, float]:
+        """
+        Calculate physical sensor dimensions from image resolution and focal length.
+        
+        Args:
+            img_w: Image width in pixels
+            img_h: Image height in pixels
+            fx: Focal length in x direction (pixels)
+            fy: Focal length in y direction (pixels)
+            
+        Returns:
+            Tuple of (sensor_width, sensor_height) in meters
+        """
+        sensor_width = img_w / fy / 1000
+        sensor_height = img_h / fx / 1000
+        return sensor_width, sensor_height
+    
+    @staticmethod
+    def _convert_real_camera_ori_to_mujoco(camera_ori_matrix: np.ndarray) -> np.ndarray:
+        """
+        Convert real-world camera orientation to MuJoCo coordinate system.
+        
+        Args:
+            camera_ori_matrix: 3x3 rotation matrix in real-world coordinates
+            
+        Returns:
+            Quaternion in WXYZ format for MuJoCo
+        """
+        # Apply coordinate system transformation (flip Y and Z axes)
+        camera_ori_matrix[:, [1, 2]] = -camera_ori_matrix[:, [1, 2]]
+        
+        # Convert to quaternion in MuJoCo's WXYZ format
+        r = Rotation.from_matrix(camera_ori_matrix)
+        camera_ori_wxyz = r.as_quat(scalar_first=True)
+        return camera_ori_wxyz
