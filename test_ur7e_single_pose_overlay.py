@@ -45,6 +45,20 @@ mounted on the robot's flange) along with --wrist-camera-extrinsics /
 relative to the flange (eef) body frame instead of world coordinates --
 the camera is attached to the flange in MuJoCo, so it moves with the arm.
 
+A real wrist photo only exists for the one pose it was shot at, so for an
+arbitrary target pose pass --wrist-mosaic <model_dir> instead of
+--wrist-image: the wrist background is then *synthesized at the pose the
+robot actually reached*, by projecting a scene mosaic (a stitched top-down
+photo of the flat workspace, built by phantom.scene_mosaic.build_mosaic)
+into the wrist camera. In that mode the wrist camera's intrinsics and its
+flange-relative extrinsic come from the mosaic's own mosaic_meta.json
+rather than from --wrist-camera-intrinsics / --wrist-camera-extrinsics, so
+the camera MuJoCo renders the robot from and the camera the background is
+rendered for are the same camera (see phantom/synthetic/wrist_background.py).
+Because the twin renders all of its cameras at one resolution, the wrist
+view is rendered at the fixed photo's resolution, which must therefore have
+the same aspect ratio as the mosaic's calibration.
+
 Usage:
     python test_ur7e_single_pose_overlay.py --image path/to/photo.jpg \
         --pos 0.5 0.0 0.35 [--ori 0 1 0 0] [--gripper 0.04] \
@@ -53,6 +67,9 @@ Usage:
         [--wrist-image path/to/wrist_photo.jpg] \
         [--wrist-camera-extrinsics path/to/wrist_extrinsics_xyzrpy.json] \
         [--wrist-camera-intrinsics path/to/wrist_intrinsics.json] [options]
+
+    python test_ur7e_single_pose_overlay.py --image path/to/photo.jpg \
+        --pos 0.5 0.0 0.35 --wrist-mosaic phantom/scene_mosaic/out_ep1_full
 """
 import argparse
 import json
@@ -63,6 +80,7 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from phantom.synthetic.wrist_background import WristMosaicBackground
 from phantom.twin_robot import TwinRobot, MujocoCameraParams, convert_real_camera_ori_to_mujoco
 
 logger = logging.getLogger(__name__)
@@ -84,6 +102,7 @@ DEFAULT_WRIST_CAMERA_EXTRINSICS_PATH = os.path.join(
 DEFAULT_WRIST_CAMERA_INTRINSICS_PATH = os.path.join(
     REPO_ROOT, "phantom/camera/camera_intrinsics_wrist_example.json"
 )
+DEFAULT_WRIST_MOSAIC_MODEL = os.path.join(REPO_ROOT, "phantom/scene_mosaic/out_ep1_full")
 
 
 def load_camera_extrinsics_xyzrpy(path: str) -> tuple[np.ndarray, np.ndarray]:
@@ -204,6 +223,35 @@ def main():
     parser.add_argument("--wrist-camera-intrinsics", default=DEFAULT_WRIST_CAMERA_INTRINSICS_PATH,
                          help="Path to a JSON file with {\"camera_matrix\": [...], \"dist_coefs\": [...], "
                               "\"resolution\": [w, h]} wrist camera intrinsics")
+    parser.add_argument("--wrist-mosaic", nargs="?", const=DEFAULT_WRIST_MOSAIC_MODEL, default=None,
+                         metavar="MODEL_DIR",
+                         help="Render the wrist-camera background from a scene mosaic model directory "
+                              "(mosaic.png, mosaic_valid.png, mosaic_meta.json, gain.npy) at the pose the "
+                              "robot reaches, instead of compositing onto a fixed --wrist-image. Passed "
+                              f"without a value, uses {os.path.relpath(DEFAULT_WRIST_MOSAIC_MODEL, REPO_ROOT)}. "
+                              "The wrist camera's intrinsics/extrinsic then come from the mosaic, not from "
+                              "--wrist-camera-intrinsics/--wrist-camera-extrinsics.")
+    parser.add_argument("--wrist-extrinsics-source", choices=("mosaic", "json"), default="mosaic",
+                         help="With --wrist-mosaic: which flange -> camera transform to mount the wrist camera "
+                              "with. \"mosaic\" (default) uses mosaic_meta.json's self-calibrated T_eef_cam; "
+                              "\"json\" uses --wrist-camera-extrinsics instead, so the hand-eye calibration can "
+                              "be checked against the scan. Either way the background is rendered for the pose "
+                              "the twin reports, so robot and background always share one camera -- what changes "
+                              "is where on the mosaic that camera is deemed to be looking.")
+    parser.add_argument("--wrist-apply-distortion", action=argparse.BooleanOptionalAction, default=False,
+                         help="With --wrist-mosaic: re-apply the real lens distortion to the background. "
+                              "Default (off) renders a pinhole background, matching MuJoCo's camera model, "
+                              "so the composited robot stays geometrically consistent with its background.")
+    parser.add_argument("--wrist-apply-gain", action=argparse.BooleanOptionalAction, default=True,
+                         help="With --wrist-mosaic: re-apply the camera-fixed shading (vignetting, the arm's "
+                              "own shadow) that was divided out when the mosaic was built")
+    parser.add_argument("--wrist-fill-color", type=int, nargs=3, default=[0, 0, 0], metavar=("R", "G", "B"),
+                         help="With --wrist-mosaic: colour for pixels the scan never saw")
+    parser.add_argument("--wrist-mount-translation", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
+                         help="With --wrist-mosaic: override the camera's lever arm in the flange frame (m); "
+                              "default uses mosaic_meta.json's T_eef_cam translation (the hand-eye value)")
+    parser.add_argument("--wrist-background-output", default=None,
+                         help="With --wrist-mosaic: also write the raw rendered background (no robot) here")
     parser.add_argument("--show-wrist-camera", action="store_true",
                          help="Render a box at the wrist camera's pose so it is visible in the fixed-camera overlay "
                               "(requires --wrist-image)")
@@ -222,15 +270,52 @@ def main():
     camera_params = build_camera_params(args.camera_extrinsics, args.camera_intrinsics, img_w, img_h)
     print(f"Camera params: pos={camera_params.pos}, resolution={camera_params.resolution}")
 
+    if args.wrist_mosaic and args.wrist_image:
+        parser.error("--wrist-mosaic and --wrist-image are mutually exclusive: the background is either "
+                     "synthesized from the mosaic at the reached pose, or taken from the given photo")
+
     wrist_frame = None
     wrist_camera_params = None
-    if args.wrist_image:
+    wrist_bg = None
+    if args.wrist_mosaic:
+        # Configure the wrist camera from the same mosaic its background is rendered
+        # from, so the two cannot disagree. The twin renders every camera at one
+        # resolution (TwinRobot passes a single camera_heights/widths), hence the fixed
+        # photo's size is also the wrist render size.
+        print(f"Loading wrist mosaic model: {args.wrist_mosaic}")
+        T_eef_cam = None
+        if args.wrist_extrinsics_source == "json":
+            # Only the extrinsic is taken from the file: the intrinsics stay the
+            # mosaic's, because the background is reprojected with them and the twin's
+            # camera has to match it pixel for pixel.
+            cam_pos, cam_rot = load_camera_extrinsics_xyzrpy(args.wrist_camera_extrinsics)
+            T_eef_cam = np.eye(4)
+            T_eef_cam[:3, :3], T_eef_cam[:3, 3] = cam_rot, cam_pos
+            print(f"Using wrist extrinsics from {args.wrist_camera_extrinsics} instead of the mosaic's: "
+                  f"xyz={cam_pos}")
+        wrist_bg = WristMosaicBackground(
+            args.wrist_mosaic, img_w, img_h, square=False,
+            apply_distortion=args.wrist_apply_distortion,
+            apply_gain=args.wrist_apply_gain,
+            fill_color=args.wrist_fill_color,
+            mount_translation=args.wrist_mount_translation,
+            T_eef_cam=T_eef_cam,
+        )
+        print(wrist_bg.describe())
+        wrist_camera_params = wrist_bg.camera_params(name="wristview")
+        print(f"Wrist camera params (flange-relative, from mosaic): pos={wrist_camera_params.pos}, "
+              f"resolution={wrist_camera_params.resolution}")
+    elif args.wrist_image:
         print(f"Reading wrist image: {args.wrist_image}")
         wrist_image_bgr = cv2.imread(args.wrist_image)
         if wrist_image_bgr is None:
             raise FileNotFoundError(f"Could not read image: {args.wrist_image}")
         wrist_img_h, wrist_img_w = wrist_image_bgr.shape[:2]
         wrist_frame = cv2.cvtColor(wrist_image_bgr, cv2.COLOR_BGR2RGB)
+
+        if (wrist_img_w, wrist_img_h) != (img_w, img_h):
+            print(f"WARNING: wrist photo is {wrist_img_w}x{wrist_img_h} but the twin renders every camera at "
+                  f"the fixed photo's {img_w}x{img_h} -- the wrist render will be resized to composite.")
 
         wrist_camera_params = build_camera_params(args.wrist_camera_extrinsics, args.wrist_camera_intrinsics,
                                                     wrist_img_w, wrist_img_h, name="wristview")
@@ -253,7 +338,7 @@ def main():
         n_steps_long=75,
         square=False,
         wrist_camera_params=wrist_camera_params,
-        show_wrist_camera=args.show_wrist_camera,
+        show_wrist_camera=args.show_wrist_camera and wrist_camera_params is not None,
     )
     print("TwinRobot initialized successfully.\n")
 
@@ -266,6 +351,13 @@ def main():
                             "target pose may be unreachable, overlay geometry may be off")
 
         output_frame = overlay_robot(frame, robot_results)
+
+        # Taking the render pose out of the simulation (rather than recomposing it from
+        # the commanded pose) guarantees the background is rendered for exactly the
+        # camera MuJoCo rendered the robot from -- see TwinRobot.get_wrist_camera_pose.
+        wrist_coverage = None
+        if wrist_bg is not None:
+            wrist_frame, wrist_coverage = wrist_bg.render_at_camera(robot.get_wrist_camera_pose())
 
         wrist_output_frame = None
         if wrist_frame is not None:
@@ -283,9 +375,17 @@ def main():
     print(f"Output written to: {output_path}")
 
     if wrist_output_frame is not None:
-        wrist_output_path = args.wrist_output or (os.path.splitext(args.wrist_image)[0] + "_ur7e_pose.png")
+        default_wrist_stem = os.path.splitext(args.wrist_image)[0] if args.wrist_image \
+            else os.path.splitext(args.image)[0] + "_wrist"
+        wrist_output_path = args.wrist_output or (default_wrist_stem + "_ur7e_pose.png")
         print(f"Writing wrist-camera output to {wrist_output_path}")
         cv2.imwrite(wrist_output_path, cv2.cvtColor(wrist_output_frame, cv2.COLOR_RGB2BGR))
+        if wrist_coverage is not None:
+            print(f"Wrist mosaic coverage: {wrist_coverage * 100:.1f}% of the view "
+                  "(the rest is workspace the scan never saw)")
+        if args.wrist_background_output and wrist_frame is not None:
+            cv2.imwrite(args.wrist_background_output, cv2.cvtColor(wrist_frame, cv2.COLOR_RGB2BGR))
+            print(f"Wrist-camera background (no robot) written to: {args.wrist_background_output}")
         print(f"Wrist-camera output written to: {wrist_output_path}")
 
 
