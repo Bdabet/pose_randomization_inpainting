@@ -157,7 +157,8 @@ class BaseProcessor:
         raise NotImplementedError
 
     def get_intrinsics(self, intrinsics_path: str) -> Tuple[dict, np.ndarray]:
-        intrinsics_matrix, intrinsics_dict = get_intrinsics_from_json(intrinsics_path)
+        intrinsics_matrix, intrinsics_dict = get_intrinsics_from_json(
+            intrinsics_path, target_resolution=self._get_image_dimensions())
         if self.square:
             intrinsics_dict, intrinsics_matrix = self.update_intrinsics_for_square_image(self.input_resolution,
                                                                                         intrinsics_dict, 

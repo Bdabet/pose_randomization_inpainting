@@ -72,26 +72,51 @@ def get_transformation_matrix_from_extrinsics(camera_extrinsics) -> np.ndarray:
     return T_cam2robot
 
 
-def get_intrinsics_from_json(json_path: str) -> Tuple[np.ndarray, dict]:
+def get_intrinsics_from_json(json_path: str, target_resolution: Optional[Tuple[int, int]] = None
+                             ) -> Tuple[np.ndarray, dict]:
+    """
+    Load camera intrinsics from either calibration format:
+
+    - {"left": {fx, fy, cx, cy, v_fov, ...}}         (ZED SDK dump; already in pixels
+      of the resolution it was dumped at, and it does not record that resolution)
+    - {"camera_matrix": 3x3, "dist_coefs": [...],    (OpenCV calibrateCamera output)
+       "resolution": [w, h]}
+
+    `target_resolution` is the (w, h) the pipeline actually processes at. When the file
+    records its own calibration resolution and the two differ, the intrinsics are
+    scaled to it -- a 1280x720 calibration used on 1920x1080 frames is otherwise off by
+    the 1.5x in focal length and principal point.
+    """
     with open(json_path, "r") as f:
         camera_intrinsics = json.load(f)
 
-    # Get camera matrix 
-    fx = camera_intrinsics["left"]["fx"]
-    fy = camera_intrinsics["left"]["fy"]
-    cx = camera_intrinsics["left"]["cx"]
-    cy = camera_intrinsics["left"]["cy"]
-    v_fov = camera_intrinsics["left"]["v_fov"]
+    dist = np.zeros(5)
+    if "left" in camera_intrinsics:
+        p = camera_intrinsics["left"]
+        fx, fy, cx, cy = p["fx"], p["fy"], p["cx"], p["cy"]
+        v_fov, calib_wh = p.get("v_fov"), None
+    elif "camera_matrix" in camera_intrinsics:
+        m = np.array(camera_intrinsics["camera_matrix"], dtype=float)
+        fx, fy, cx, cy = m[0, 0], m[1, 1], m[0, 2], m[1, 2]
+        dist = np.array(camera_intrinsics.get("dist_coefs", [[0, 0, 0, 0, 0]]), dtype=float).ravel()
+        v_fov = None
+        calib_wh = tuple(camera_intrinsics["resolution"]) if "resolution" in camera_intrinsics else None
+    else:
+        raise ValueError(
+            f"Unrecognised camera intrinsics format in {json_path}: expected a 'left' "
+            "block (ZED) or a 'camera_matrix' (OpenCV)"
+        )
+
+    if target_resolution is not None and calib_wh is not None:
+        sx, sy = target_resolution[0] / calib_wh[0], target_resolution[1] / calib_wh[1]
+        fx, cx, fy, cy = fx * sx, cx * sx, fy * sy, cy * sy
+
+    if v_fov is None:
+        img_h = target_resolution[1] if target_resolution is not None else calib_wh[1]
+        v_fov = float(np.degrees(2 * np.arctan(img_h / (2 * fy))))
+
     intrinsics_matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
-
-    intrinsics_dict = {
-        "fx": fx,
-        "fy": fy,
-        "cx": cx,
-        "cy": cy,
-        "v_fov": v_fov,
-    }
-
+    intrinsics_dict = {"fx": fx, "fy": fy, "cx": cx, "cy": cy, "v_fov": v_fov, "dist": dist}
     return intrinsics_matrix, intrinsics_dict
 
 def resize_binary_image(image: np.ndarray, new_size: int) -> np.ndarray:
