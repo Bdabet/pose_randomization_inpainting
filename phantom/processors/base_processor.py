@@ -261,8 +261,8 @@ class BaseProcessor:
         # Epic
         if self.input_resolution == 256:
             img_w = 456
-        # Phantom paper
-        elif self.input_resolution == 1080:
+        # Phantom paper (1080) and any other 16:9 height, e.g. 720 for a 1280x720 camera
+        else:
             img_w = self.input_resolution * 16 // 9
         img_h = self.input_resolution
         return img_w, img_h
