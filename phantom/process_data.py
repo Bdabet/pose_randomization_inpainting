@@ -44,11 +44,11 @@ PROCESSING_ORDER_EPIC = [
     "robot_inpaint",
 ]
 
-def process_one_demo(data_sub_folder: str, cfg: DictConfig, processor_classes: dict) -> None:
-    # Choose processing order based on epic flag
+def select_modes(cfg: DictConfig) -> list:
+    """Resolve cfg.mode (str, comma-separated str, or list) into an ordered list of modes to run."""
     processing_order = PROCESSING_ORDER_EPIC if cfg.epic else PROCESSING_ORDER
-    
-    # Handle both string and list modes
+    valid_modes = processing_order
+
     if isinstance(cfg.mode, str):
         # Handle comma-separated string format
         if ',' in cfg.mode:
@@ -57,18 +57,22 @@ def process_one_demo(data_sub_folder: str, cfg: DictConfig, processor_classes: d
                 mode = mode.strip()
                 if mode == "all":
                     selected_modes.extend(processing_order)
-                elif mode in processing_order:
+                elif mode in valid_modes:
                     selected_modes.append(mode)
-        else:
-            selected_modes = [m for m in processing_order if m in cfg.mode or "all" in cfg.mode]
-    else:
-        # For list of modes, use the order provided by user
-        selected_modes = []
-        for mode in cfg.mode:
-            if mode == "all":
-                selected_modes.extend(processing_order)
-            elif mode in processing_order:
-                selected_modes.append(mode)
+            return selected_modes
+        return [m for m in valid_modes if m == cfg.mode or cfg.mode == "all"]
+
+    # For list of modes, use the order provided by user
+    selected_modes = []
+    for mode in cfg.mode:
+        if mode == "all":
+            selected_modes.extend(processing_order)
+        elif mode in valid_modes:
+            selected_modes.append(mode)
+    return selected_modes
+
+def process_one_demo(data_sub_folder: str, cfg: DictConfig, processor_classes: dict) -> None:
+    selected_modes = select_modes(cfg)
     
     for mode in selected_modes:
         print(f"----------------- {mode.upper()} PROCESSOR -----------------")
@@ -82,30 +86,7 @@ def process_one_demo(data_sub_folder: str, cfg: DictConfig, processor_classes: d
                 raise
 
 def process_all_demos(cfg: DictConfig, processor_classes: dict) -> None:
-    # Choose processing order based on epic flag
-    processing_order = PROCESSING_ORDER_EPIC if cfg.epic else PROCESSING_ORDER
-    
-    # Handle both string and list modes
-    if isinstance(cfg.mode, str):
-        # Handle comma-separated string format
-        if ',' in cfg.mode:
-            selected_modes = []
-            for mode in cfg.mode.split(','):
-                mode = mode.strip()
-                if mode == "all":
-                    selected_modes.extend(processing_order)
-                elif mode in processing_order:
-                    selected_modes.append(mode)
-        else:
-            selected_modes = [m for m in processing_order if m in cfg.mode or "all" in cfg.mode]
-    else:
-        # For list of modes, use the order provided by user
-        selected_modes = []
-        for mode in cfg.mode:
-            if mode == "all":
-                selected_modes.extend(processing_order)
-            elif mode in processing_order:
-                selected_modes.append(mode)
+    selected_modes = select_modes(cfg)
     
     base_processor = BaseProcessor(cfg)
     all_data_folders = base_processor.all_data_folders.copy()
@@ -122,30 +103,7 @@ def process_all_demos(cfg: DictConfig, processor_classes: dict) -> None:
                     raise
 
 def process_all_demos_parallel(cfg: DictConfig, processor_classes: dict) -> None:
-    # Choose processing order based on epic flag
-    processing_order = PROCESSING_ORDER_EPIC if cfg.epic else PROCESSING_ORDER
-    
-    # Handle both string and list modes
-    if isinstance(cfg.mode, str):
-        # Handle comma-separated string format
-        if ',' in cfg.mode:
-            selected_modes = []
-            for mode in cfg.mode.split(','):
-                mode = mode.strip()
-                if mode == "all":
-                    selected_modes.extend(processing_order)
-                elif mode in processing_order:
-                    selected_modes.append(mode)
-        else:
-            selected_modes = [m for m in processing_order if m in cfg.mode or "all" in cfg.mode]
-    else:
-        # For list of modes, use the order provided by user
-        selected_modes = []
-        for mode in cfg.mode:
-            if mode == "all":
-                selected_modes.extend(processing_order)
-            elif mode in processing_order:
-                selected_modes.append(mode)
+    selected_modes = select_modes(cfg)
     
     base_processor = BaseProcessor(cfg)
     all_data_folders = base_processor.all_data_folders.copy()
