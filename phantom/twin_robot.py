@@ -86,7 +86,7 @@ class TwinRobot:
     def __init__(self, robot_name: str, gripper_name: str, camera_params: MujocoCameraParams, camera_height: int, camera_width: int,
                  render: bool, n_steps_short: int, n_steps_long: int, debug_cameras: list[str] = [],
                  square: bool = False, wrist_camera_params: Union[MujocoCameraParams, None] = None,
-                 show_wrist_camera: bool = False):
+                 show_wrist_camera: bool = False, grasp_object: Union[dict, None] = None):
         """
         Initialize the single-arm robot twin.
 
@@ -106,6 +106,9 @@ class TwinRobot:
                 that body frame rather than world coordinates
             show_wrist_camera: If True (and wrist_camera_params is set), add a box at the
                 wrist camera's pose so it is rendered (and masked as robot) in other cameras
+            grasp_object: Optional dict(type="box"|"cylinder", size=..., rgba=...) describing an
+                object the suction gripper can carry (see place_object / set_suction). It has no
+                collision geometry, so it is only ever held by weld constraints.
         """
         # Store configuration parameters
         self.robot_name = robot_name
@@ -122,6 +125,7 @@ class TwinRobot:
         self.debug_cameras = list(debug_cameras) if debug_cameras else []
         self.wrist_camera_params = wrist_camera_params
         self.wrist_camera_name = wrist_camera_params.name if wrist_camera_params else None
+        self.has_grasp_object = grasp_object is not None
 
         # Configure observation specifications for robomimic
         rgb_obs = [f"{self.camera_params.name}_image"] + [f"{cam}_image" for cam in self.debug_cameras]
@@ -154,7 +158,9 @@ class TwinRobot:
         options["camera_segmentations"] = "instance"  # Instance segmentation masks
         options["direct_gripper_control"] = True
         options["use_depth_obs"] = True
-        
+        if grasp_object is not None:
+            options["grasp_object"] = dict(grasp_object)
+
         # Set camera parameters
         options["camera_pos"] = self.camera_params.pos
         options["camera_quat_wxyz"] = self.camera_params.ori_wxyz
@@ -185,6 +191,38 @@ class TwinRobot:
         # Initialize environment and set robot base position
         self.reset()
         self.robot_base_pos = self.DEFAULT_ROBOT_BASE_POS  # Fixed base position for single-arm setup
+        self._seg_ids = self._resolve_segmentation_ids()
+
+    def _resolve_segmentation_ids(self) -> dict:
+        """
+        Instance-segmentation ids of the robot arm, gripper and (optional) grasp object.
+
+        robosuite numbers instances by their position in the task's model list, objects
+        first, so adding a grasp object shifts the robot and gripper ids by one. Looking
+        them up by name keeps the masks right with or without an object (without one
+        this reproduces the old hardcoded robot=1, gripper=3).
+        """
+        env = self.env.env
+        ids = {name: i + 1 for i, name in enumerate(env.model.instances_to_ids.keys())}
+        robot = env.robots[0]
+        out = {"robot": ids[robot.robot_model.name], "gripper": ids[robot.gripper.name]}
+        if self.has_grasp_object:
+            out["object"] = ids[env.grasp_object.name]
+        return out
+
+    def place_object(self, pos: np.ndarray, quat_xyzw: np.ndarray) -> None:
+        """Put the grasp object at `pos` (robot-base frame) and leave it resting, suction off."""
+        quat_wxyz = np.roll(np.asarray(quat_xyzw, dtype=float), 1)
+        self.env.env.set_object_pose(np.asarray(pos, dtype=float) + self.robot_base_pos, quat_wxyz)
+
+    def set_suction(self, on: bool) -> None:
+        """Attach the grasp object to the gripper (True) or leave it where it is (False)."""
+        self.env.env.set_suction(on)
+
+    def get_object_pose(self) -> np.ndarray:
+        """[x, y, z, qx, qy, qz, qw] of the grasp object in the robot-base frame."""
+        pos, quat_xyzw = self.env.env.get_object_pose()
+        return np.concatenate([pos - self.robot_base_pos, quat_xyzw])
 
     def reset(self):
         """Reset environment and clear observation history."""
@@ -551,7 +589,7 @@ class TwinRobot:
 
         seg_img = self.get_seg_image(obs, camera_name)
         mask = np.zeros_like(seg_img)
-        mask[seg_img == 1] = 1  # Robot arm
+        mask[seg_img == self._seg_ids["robot"]] = 1  # Robot arm
         return mask
 
     def get_gripper_mask(self, obs: dict, camera_name: Union[str, None] = None) -> np.ndarray:
@@ -570,5 +608,19 @@ class TwinRobot:
         """
         seg_img = self.get_seg_image(obs, camera_name)
         mask = np.zeros_like(seg_img)
-        mask[seg_img == 3] = 1  # Gripper
+        mask[seg_img == self._seg_ids["gripper"]] = 1  # Gripper
+        return mask
+
+    def get_object_mask(self, obs: dict, camera_name: Union[str, None] = None) -> np.ndarray:
+        """
+        Generate binary mask for the grasp object's pixels (all zeros without one).
+
+        Args:
+            obs: Observation dictionary containing segmentation data
+            camera_name: Camera to read segmentation from (default: main camera)
+        """
+        seg_img = self.get_seg_image(obs, camera_name)
+        mask = np.zeros_like(seg_img)
+        if "object" in self._seg_ids:
+            mask[seg_img == self._seg_ids["object"]] = 1
         return mask
