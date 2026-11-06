@@ -26,5 +26,7 @@ target_hand: "left"
 constrained_hand: true
 depth_for_overlay: true
 render: false
-camera_intrinsics: "camera/camera_intrinsics_HD1080.json"
-camera_extrinsics: "camera/camera_extrinsics.json"
+# External (fixed) camera. Paths are relative to the working directory, which
+# process_data.py is normally run from phantom/.
+camera_intrinsics: "camera/camera_intrinsics_example.json"
+camera_extrinsics: "camera/camera_extrinsics_xyzrpy_example.json"
