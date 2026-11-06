@@ -133,6 +133,36 @@ def resize_binary_image(image: np.ndarray, new_size: int) -> np.ndarray:
     return binary_image
 
 
+def center_crop_square(img: np.ndarray) -> np.ndarray:
+    """Crop equal margins off the left/right so a landscape image becomes square."""
+    height, width = img.shape[:2]
+    n_remove = (width - height) // 2
+    if n_remove <= 0:
+        return img
+    return img[:, n_remove:-n_remove]
+
+
+def overlay_robot(frame: np.ndarray, robot_results: dict) -> np.ndarray:
+    """
+    Composite the rendered robot onto frame using its instance-segmentation masks.
+    An optional "object_mask" (the carried object) is composited like the robot.
+    """
+    rgb_sim = (robot_results["rgb_img"] * 255).astype(np.uint8)
+    if rgb_sim.shape[:2] != frame.shape[:2]:
+        rgb_sim = cv2.resize(rgb_sim, (frame.shape[1], frame.shape[0]))
+
+    masks = [robot_results["robot_mask"], robot_results["gripper_mask"]]
+    if robot_results.get("object_mask") is not None:
+        masks.append(robot_results["object_mask"])
+    if masks[0].shape[:2] != frame.shape[:2]:
+        masks = [cv2.resize(m.astype(np.uint8), (frame.shape[1], frame.shape[0])) for m in masks]
+
+    out = frame.copy()
+    overlay_mask = np.any([m > 0 for m in masks], axis=0)
+    out[overlay_mask] = rgb_sim[overlay_mask]
+    return out
+
+
 def convert_video_to_images(video_path: str, save_folder: str, square=False, reverse=False):
     """Save each frame of video as an image in save_folder."""
     if not os.path.exists(save_folder):

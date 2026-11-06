@@ -25,6 +25,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 from phantom.twin_robot import TwinRobot, MujocoCameraParams, convert_real_camera_ori_to_mujoco
+from phantom.utils.image_utils import center_crop_square, overlay_robot
 
 logger = logging.getLogger(__name__)
 
@@ -101,32 +102,6 @@ def generate_random_trajectory(num_frames: int, num_waypoints: int, seed: int):
     gripper_widths = waypoint_grippers[np.searchsorted(waypoint_frame_idxs, frame_idxs, side="right") - 1]
 
     return positions, quats_xyzw, gripper_widths
-
-
-def center_crop_square(img: np.ndarray) -> np.ndarray:
-    height, width = img.shape[:2]
-    n_remove = (width - height) // 2
-    if n_remove <= 0:
-        return img
-    return img[:, n_remove:-n_remove]
-
-
-def overlay_robot(frame: np.ndarray, robot_results: dict) -> np.ndarray:
-    """Composite the rendered robot onto frame using its instance-segmentation masks."""
-    rgb_sim = (robot_results["rgb_img"] * 255).astype(np.uint8)
-    if rgb_sim.shape[:2] != frame.shape[:2]:
-        rgb_sim = cv2.resize(rgb_sim, (frame.shape[1], frame.shape[0]))
-
-    robot_mask = robot_results["robot_mask"]
-    gripper_mask = robot_results["gripper_mask"]
-    if robot_mask.shape[:2] != frame.shape[:2]:
-        robot_mask = cv2.resize(robot_mask.astype(np.uint8), (frame.shape[1], frame.shape[0]))
-        gripper_mask = cv2.resize(gripper_mask.astype(np.uint8), (frame.shape[1], frame.shape[0]))
-
-    out = frame.copy()
-    overlay_mask = (robot_mask > 0) | (gripper_mask > 0)
-    out[overlay_mask] = rgb_sim[overlay_mask]
-    return out
 
 
 def main():
