@@ -489,6 +489,51 @@ class TwinRobot:
             img = img[:,n_remove:-n_remove,:]
         return img
     
+    def get_flange_pose(self) -> np.ndarray:
+        """
+        Pose of the body the wrist camera hangs off (the eef body, i.e. the flange) as
+        a 4x4 T_base_flange, translation relative to the robot base.
+
+        This is the frame a real robot's `robot_eef_pose` reports and the one
+        `T_eef_cam` is expressed in -- not `robot0_eef_pos/quat`, which describe the
+        grip site further down the tool. Taking it from the simulation keeps callers
+        from having to know the tool offset (see `get_wrist_camera_pose`).
+        """
+        sim = self.env.env.sim
+        bid = sim.model.body_name2id(self.env.env.robots[0].robot_model.eef_name)
+        T = np.eye(4)
+        T[:3, :3] = sim.data.body_xmat[bid].reshape(3, 3)
+        T[:3, 3] = sim.data.body_xpos[bid] - self.robot_base_pos
+        return T
+
+    def get_wrist_camera_pose(self) -> np.ndarray:
+        """
+        Actual pose of the wrist camera right now, as T_base_cam in the OpenCV optical
+        convention (x right, y down, z forward), with translation relative to the robot
+        base -- the convention `phantom.scene_mosaic` uses.
+
+        Read back out of the simulation rather than recomputed from the commanded pose,
+        because the frame the twin reports as "eef" is not the frame the camera hangs
+        off: `robot0_eef_pos/quat` is the gripper's grip site, while the camera is a
+        child of the eef *body* (the flange), 0.155 m back along the tool axis and
+        rotated 45 deg about it for a Robotiq85. Anything synthesized from this pose is
+        therefore guaranteed to line up with what MuJoCo rendered, whatever frame
+        offsets sit in between.
+
+        MuJoCo cameras look along -z with +y up, so the y and z axes are negated to get
+        the optical frame.
+        """
+        if not self.wrist_camera_name:
+            raise RuntimeError("No wrist camera is configured on this TwinRobot")
+        sim = self.env.env.sim
+        cam_id = sim.model.camera_name2id(self.wrist_camera_name)
+        R_cam = sim.data.cam_xmat[cam_id].reshape(3, 3).copy()
+        R_cam[:, [1, 2]] = -R_cam[:, [1, 2]]
+        T = np.eye(4)
+        T[:3, :3] = R_cam
+        T[:3, 3] = sim.data.cam_xpos[cam_id] - self.robot_base_pos
+        return T
+
     def get_robot_mask(self, obs: dict, camera_name: Union[str, None] = None) -> np.ndarray:
         """
         Generate binary mask for robot pixels.
