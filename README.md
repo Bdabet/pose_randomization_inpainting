@@ -98,6 +98,30 @@ Each video is processed using the following steps:
      * `mode=robot_inpaint`: overlay a single robot (default) or bimanual (epic mode) robot on the image
 
 
+### Synthetic pick-and-place (pose randomization)
+Generates episodes with a randomized start pose (lift -> transport -> place) rendered with the twin robot onto a clean-plate video of the workspace, written as a diffusion_policy-style Zarr ReplayBuffer. Not part of `all`; runs once, no recorded demos needed.
+```
+cd phantom
+python process_data.py --config-name=ur7e mode=synthetic_pickplace demo_name=pick_and_place \
+    gripper=ECBPiUR synthetic.background_video=../pick_and_place/Empty_workspace.mp4 synthetic.num_episodes=20
+```
+Output: `<processed_data_root_dir>/<demo_name>/synthetic_processor/<demo_name>.zarr` (+ QA videos, one per camera). All parameters live in the `synthetic:` block of `configs/ur7e.yaml`; the logic is in `phantom/synthetic/` and `phantom/processors/synthetic_processor.py`.
+
+#### Wrist camera
+
+A flange-mounted second camera is generated alongside the fixed one (`synthetic.wrist`). It moves with the robot, so a clean-plate video cannot serve as its background: instead each frame's background is *rendered* from a scene mosaic -- a stitched top-down photo of the flat workspace, built offline from a wrist-camera scan recording -- at the pose the robot reached on that frame.
+
+```
+# once per workspace: build the mosaic from a scan recording
+python -m phantom.scene_mosaic.build_mosaic --data <scan_data> --episode 1 --camera 1 --out phantom/scene_mosaic/out_ep1_full
+```
+
+That directory is what `synthetic.wrist.mosaic_model` points at, and it is also where the wrist camera's intrinsics and flange->camera extrinsic come from, so the camera MuJoCo renders the robot from and the camera the background is rendered for cannot drift apart. The background is rendered from the camera pose read back out of the simulation, not one recomputed from the reported end-effector pose -- the twin reports the gripper's grip site, while the camera is mounted on the flange 0.155 m behind it. Set `synthetic.wrist.enabled=false` for the fixed camera alone.
+
+The scan corrects the hand-eye extrinsic's *rotation* (by 165.6 deg, for the current scan) and confirms its lever arm along the plane normal to 1.3 mm; the lever arm's in-plane part is the one thing left open, as `synthetic.wrist.mount_translation`. See `phantom/scene_mosaic/README.md` for the frames involved and how to settle it against a real wrist frame.
+
+The mosaic only covers the patch of table the scan swept, so a randomization region outside it produces wrist frames that are part fill colour without anything failing. The processor therefore checks the configured region against the scan before generating, and with `synthetic.wrist.region_from_mosaic` derives one from it. **[docs/wrist_camera_pipeline.md](docs/wrist_camera_pipeline.md) walks through the whole workflow** -- recording a scan, building the mosaic, verifying it against real wrist frames, and then either replaying a recorded trajectory (`scripts/replay_real_trajectory.py`) or generating synthetic episodes.
+
 ### Config reference (see configuration files in `configs/`)
 
 | Flag | Type | Required | Choices | Description |
