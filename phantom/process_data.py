@@ -20,6 +20,7 @@ class ProcessingMode(Enum):
     SMOOTHING = "smoothing"
     HAND_INPAINT = "hand_inpaint"
     ROBOT_INPAINT = "robot_inpaint"
+    SYNTHETIC_PICKPLACE = "synthetic_pickplace"
     ALL = "all"
 
 PROCESSING_ORDER = [
@@ -44,10 +45,17 @@ PROCESSING_ORDER_EPIC = [
     "robot_inpaint",
 ]
 
-def select_modes(cfg: DictConfig) -> list:
-    """Resolve cfg.mode (str, comma-separated str, or list) into an ordered list of modes to run."""
+# Not part of "all": generates data from scratch instead of processing recorded demos,
+# so it must be requested explicitly and runs once rather than once per demo folder.
+SYNTHETIC_MODE = "synthetic_pickplace"
+
+def select_modes(cfg: DictConfig, synthetic: bool = False) -> list:
+    """
+    Resolve cfg.mode (str, comma-separated str, or list) into an ordered list of modes to run.
+    The per-demo modes are returned by default; synthetic=True returns only the run-once synthetic mode.
+    """
     processing_order = PROCESSING_ORDER_EPIC if cfg.epic else PROCESSING_ORDER
-    valid_modes = processing_order
+    valid_modes = [SYNTHETIC_MODE] if synthetic else processing_order
 
     if isinstance(cfg.mode, str):
         # Handle comma-separated string format
@@ -55,21 +63,25 @@ def select_modes(cfg: DictConfig) -> list:
             selected_modes = []
             for mode in cfg.mode.split(','):
                 mode = mode.strip()
-                if mode == "all":
+                if mode == "all" and not synthetic:
                     selected_modes.extend(processing_order)
                 elif mode in valid_modes:
                     selected_modes.append(mode)
             return selected_modes
-        return [m for m in valid_modes if m == cfg.mode or cfg.mode == "all"]
+        return [m for m in valid_modes if m == cfg.mode or (cfg.mode == "all" and not synthetic)]
 
     # For list of modes, use the order provided by user
     selected_modes = []
     for mode in cfg.mode:
-        if mode == "all":
+        if mode == "all" and not synthetic:
             selected_modes.extend(processing_order)
         elif mode in valid_modes:
             selected_modes.append(mode)
     return selected_modes
+
+def process_synthetic(cfg: DictConfig, processor_classes: dict) -> None:
+    print(f"----------------- {SYNTHETIC_MODE.upper()} PROCESSOR -----------------")
+    processor_classes[SYNTHETIC_MODE](cfg).process()
 
 def process_one_demo(data_sub_folder: str, cfg: DictConfig, processor_classes: dict) -> None:
     selected_modes = select_modes(cfg)
@@ -124,6 +136,7 @@ def get_processor_classes(cfg: DictConfig) -> dict:
     from phantom.processors.smoothing_processor import SmoothingProcessor
     from phantom.processors.robotinpaint_processor import RobotInpaintProcessor
     from phantom.processors.handinpaint_processor import HandInpaintProcessor
+    from phantom.processors.synthetic_processor import SyntheticPickPlaceProcessor
     
     return {
         "bbox": BBoxProcessor,
@@ -135,6 +148,7 @@ def get_processor_classes(cfg: DictConfig) -> dict:
         "smoothing": SmoothingProcessor,
         "robot_inpaint": RobotInpaintProcessor,
         "hand_inpaint": HandInpaintProcessor,
+        SYNTHETIC_MODE: SyntheticPickPlaceProcessor,
     }
 
 def validate_mode(cfg: DictConfig) -> None:
@@ -174,6 +188,12 @@ def main(cfg: DictConfig):
     # Get processor classes
     processor_classes = get_processor_classes(cfg)
     
+    # Synthetic generation has no demo folders to iterate: run it once, then any per-demo modes
+    if select_modes(cfg, synthetic=True):
+        process_synthetic(cfg, processor_classes)
+        if not select_modes(cfg):
+            return
+
     if cfg.n_processes > 1:
         process_all_demos_parallel(cfg, processor_classes)
     elif cfg.demo_num is not None:
@@ -194,6 +214,7 @@ def hydra_main(cfg: DictConfig):
     - Process multiple modes sequentially: python process_data.py mode=bbox,hand3d
     - Process with custom order: python process_data.py mode=hand3d,bbox,action
     - Process with bracket notation (use quotes): python process_data.py "mode=[bbox,hand3d]"
+    - Generate synthetic pick-and-place episodes: python process_data.py --config-name=ur7e mode=synthetic_pickplace
     """
     main(cfg)
 
