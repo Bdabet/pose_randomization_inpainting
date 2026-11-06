@@ -10,7 +10,9 @@ from omegaconf import DictConfig
 from scipy.spatial.transform import Rotation
 
 from phantom.utils.data_utils import get_parent_folder_of_package
-from phantom.utils.image_utils import get_intrinsics_from_json, get_transformation_matrix_from_extrinsics
+from phantom.utils.image_utils import (get_intrinsics_from_json,
+                                       get_transformation_matrix_from_extrinsics,
+                                       normalize_extrinsics)
 from phantom.processors.paths import Paths, PathsConfig
 
 if TYPE_CHECKING:
@@ -186,6 +188,7 @@ class BaseProcessor:
             raise ValueError(f"Invalid JSON in extrinsics file {extrinsics_path}: {str(e)}")
         
         try:
+            camera_extrinsics = normalize_extrinsics(camera_extrinsics)
             T_cam2robot = get_transformation_matrix_from_extrinsics(camera_extrinsics)
         except Exception as e:
             raise ValueError(f"Failed to process extrinsics data from {extrinsics_path}: {str(e)}")

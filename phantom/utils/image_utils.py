@@ -6,6 +6,8 @@ import mediapy as media
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from scipy.spatial.transform import Rotation
+
 @dataclass
 class BoundingBox:
     xmin: int
@@ -38,8 +40,30 @@ class DetectionResult:
             ),
         )
 
-def get_transformation_matrix_from_extrinsics(camera_extrinsics: List[Dict]) -> np.ndarray:
-    """Get homogeneous transformation matrix from camera extrinsics."""
+def normalize_extrinsics(camera_extrinsics) -> List[Dict]:
+    """
+    Accept either calibration format and return the [{camera_base_pos,
+    camera_base_ori}] one the rest of the code expects:
+
+    - [{"camera_base_pos": [...], "camera_base_ori": 3x3}]  (as written by the
+      marker-based calibration)
+    - {"xyz": [...], "rpy": [...], "degrees": bool}         (hand-written pose)
+
+    Both describe the same thing: camera position in the robot base frame and the
+    camera's orientation in the OpenCV optical convention (x right, y down,
+    z forward).
+    """
+    if isinstance(camera_extrinsics, dict) and "xyz" in camera_extrinsics:
+        ori = Rotation.from_euler("xyz", camera_extrinsics["rpy"],
+                                  degrees=camera_extrinsics.get("degrees", True)).as_matrix()
+        return [{"camera_base_pos": list(camera_extrinsics["xyz"]),
+                 "camera_base_ori": ori.tolist()}]
+    return camera_extrinsics
+
+
+def get_transformation_matrix_from_extrinsics(camera_extrinsics) -> np.ndarray:
+    """Get homogeneous transformation matrix from camera extrinsics (either format)."""
+    camera_extrinsics = normalize_extrinsics(camera_extrinsics)
     cam_base_pos = np.array(camera_extrinsics[0]["camera_base_pos"])
     cam_base_ori = np.array(camera_extrinsics[0]["camera_base_ori"])
     T_cam2robot = np.eye(4)
