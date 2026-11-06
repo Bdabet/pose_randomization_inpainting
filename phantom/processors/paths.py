@@ -83,6 +83,9 @@ class Paths:
         self.video_birdview = self.inpaint_processor / "video_birdview.mkv"
         self.training_data = self.inpaint_processor / "training_data.npz"
 
+        # Synthetic pick-and-place processor
+        self.synthetic_processor = self.data_path / "synthetic_processor"
+
     def _setup_original_images(self):
         """Set up original images paths."""
         convert_video_to_images(self.video_left, self.original_images_folder, square=False)
