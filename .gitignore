@@ -14,3 +14,11 @@ replay_buffer.zarr/*
 pick_and_place/*
 smoke_test_ur7e_out/*
 epic/*
+*.mp4
+data/*
+*.png
+replay_buffer.zarr
+phantom/scene_mosaic/test_data/
+phantom/scene_mosaic/out_ep1_full/
+compare_out/
+replay_out/
