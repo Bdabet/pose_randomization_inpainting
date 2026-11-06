@@ -30,3 +30,78 @@ render: false
 # process_data.py is normally run from phantom/.
 camera_intrinsics: "camera/camera_intrinsics_example.json"
 camera_extrinsics: "camera/camera_extrinsics_xyzrpy_example.json"
+
+# Synthetic pick-and-place generation (mode=synthetic_pickplace)
+synthetic:
+  background_video: "pick_and_place/Empty_workspace.mp4"  # clean (robot/hand-free) plate of the workspace
+  num_episodes: 10
+  seed: 0
+  # Random start-pose region, robot-base frame (m, grip site). It has to stay inside
+  # the external camera's view: that camera sits only ~0.58 m above the base, over a
+  # table at z ~0.06, so anything much higher puts the arm beside/above the camera and
+  # out of frame. These match the patch the wrist scan covered.
+  region_low: [0.25, -0.38, 0.10]
+  region_high: [0.45, -0.22, 0.15]
+  place_pos: [0.35, -0.30, 0.10]
+  lift_height: 0.2
+  yaw_range_deg: 60.0
+  # Centre of the yaw band. With a wrist camera this is derived from the scan when
+  # synthetic.wrist.region_from_mosaic is set, since yaw turns the camera's footprint
+  # over the table and the mosaic only covers one orientation.
+  yaw_center_deg: 0.0
+  velocity: 0.15                    # end-effector speed (m/s)
+  release_frames: 10                # suction-off dwell at the place pose
+  grasp_frames: 8                   # suction-on dwell at the pick pose
+  settle_frames: 3                  # still frames at pick/place before suction switches (controller lag)
+  approach_height: null             # height flown at between start and pick; null = lift_height
+  # Object carried by the suction gripper (needs gripper=ECBPiUR). It is rendered in the
+  # sim and composited into every camera, and its pose is stored as `object_pose`.
+  # It has no collision geometry: it rests at a random pick spot on the picking plane
+  # (z = region_low z), is welded to the gripper while suction is on, and welded back
+  # to the world where it is released. null = motion only, no object.
+  object:
+    type: box                       # box | cylinder
+    size: [0.03, 0.03, 0.025]       # half extents (m); cylinder: [radius, half length]
+    rgba: [0.8, 0.3, 0.2, 1.0]
+  hold_min: 3                       # frames a sampled background frame is held
+  hold_max: 10
+  max_bg_frames: 1000
+  fps: 15.0
+  save_videos: true
+  # Frame robot_eef_pose and action are written in. "flange" matches what the real robot
+  # records and is commanded with its TCP at the flange (the UR default; also
+  # phantom.scene_mosaic composes robot_eef_pose straight with the hand-eye flange ->
+  # camera transform); "grip" is the grip site TwinRobot tracks, one tool length further
+  # out, and is only for reproducing datasets made before this existed.
+  eef_pose_frame: flange
+
+  # Flange-mounted second camera. It moves with the robot, so there is no clean
+  # plate for it: each frame's background is rendered from a scene mosaic at the
+  # pose the robot reached (phantom/scene_mosaic/README.md).
+  wrist:
+    enabled: false
+    # dir from phantom.scene_mosaic.build_mosaic; relative to phantom/, like camera_intrinsics above
+    mosaic_model: "scene_mosaic/out_ep1_full"
+    # false renders a pinhole background, matching MuJoCo's camera model, so the
+    # composited robot is geometrically consistent with its background (real wrist
+    # frames then have to be undistorted at inference time); true instead re-applies
+    # the real lens distortion, which looks like a raw frame but misplaces the robot
+    # near the edges.
+    apply_distortion: false
+    apply_gain: true                 # re-apply vignetting + the arm's own shadow
+    fill_color: [0, 0, 0]            # RGB for workspace the scan never saw
+    min_coverage: 0.9                # warn below this fraction of the view (frames are kept)
+    # The randomization region above is in grip-site coordinates; the scan that built
+    # the mosaic is in flange coordinates, one tool length away, and only covers the
+    # patch of table it swept. A region outside it generates wrist frames that are
+    # part fill_color without anything failing, so it is checked before any episode is
+    # generated (phantom/synthetic/wrist_region.py).
+    region_from_mosaic: true         # derive region_low/high, lift_height and place_pos from the scan
+    min_region_coverage: 0.9         # refuse (or fit to) a region whose worst pose falls below this
+    pick_height_above_scan: 0.0      # raise the picking height above the scan plane (m)
+    show_camera_body: false          # draw a box at the wrist camera in the fixed view
+    # Camera lever arm in the flange frame (m). null uses mosaic_meta.json's
+    # T_eef_cam, i.e. the hand-eye value, which the scan's parallax distance confirms
+    # to 1.3 mm along the plane normal; its in-plane part is unconstrained by the scan
+    # and only real wrist frames settle it. Set a [x, y, z] here to override.
+    mount_translation: null
